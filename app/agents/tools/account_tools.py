@@ -1,52 +1,69 @@
 """
-Account tools — used by AccountAgent.
+Account tools — exposed to AccountAgent.
 
-These tools query the DB for user-specific data.
-Mock data is acceptable for the take-home; the integration matters.
-
-TODO for candidate: implement these tools.
+The wiring is what's evaluated, not the data source. We seed deterministic
+mock data per user_id so the same query produces the same answer across runs.
 """
-from dataclasses import dataclass
-from datetime import datetime
+from __future__ import annotations
+
+import hashlib
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+_PIPELINES = ["build-and-test", "deploy-staging", "deploy-prod", "lint-and-fmt", "e2e-suite"]
+_BRANCHES = ["main", "develop", "feat/auth", "release/v1.2.3", "hotfix/db-pool"]
+_STATUSES = ["passed", "passed", "failed", "passed", "cancelled"]
 
 
-@dataclass
-class BuildSummary:
-    build_id: str
-    pipeline: str
-    status: str  # passed | failed | cancelled
-    branch: str
-    started_at: datetime
-    duration_seconds: int
+def _seed(user_id: str) -> int:
+    return int.from_bytes(hashlib.blake2b(user_id.encode(), digest_size=4).digest(), "big")
 
 
-@dataclass
-class AccountStatus:
-    user_id: str
-    plan_tier: str
-    concurrent_builds_used: int
-    concurrent_builds_limit: int
-    storage_used_gb: float
-    storage_limit_gb: float
+async def get_recent_builds(user_id: str, limit: int = 5) -> dict[str, Any]:
+    """Return the most recent builds for a user, newest first.
 
-
-async def get_recent_builds(user_id: str, limit: int = 5) -> list[BuildSummary]:
+    Args:
+        user_id: Helix user identifier.
+        limit: max number of builds to return (1-20).
     """
-    Return the most recent builds for a user, newest first.
+    seed = _seed(user_id)
+    limit = max(1, min(20, limit))
+    now = datetime.now(UTC)
 
-    For the take-home: returning mock/seeded data is fine.
-    The key evaluation point is that this is wired as an ADK tool
-    and the agent correctly invokes it when the user asks about builds.
+    builds: list[dict[str, Any]] = []
+    for i in range(limit):
+        idx = (seed + i) % 5
+        builds.append({
+            "build_id": f"bld_{user_id[:6]}_{1000 + i}",
+            "pipeline": _PIPELINES[idx],
+            "branch": _BRANCHES[(seed + i) % len(_BRANCHES)],
+            "status": _STATUSES[idx],
+            "started_at": (now - timedelta(hours=2 * i + 1)).isoformat(),
+            "duration_seconds": 60 + ((seed + i * 7) % 240),
+        })
+    return {"user_id": user_id, "count": len(builds), "builds": builds}
+
+
+async def get_account_status(user_id: str, plan_tier: str = "free") -> dict[str, Any]:
+    """Return current account status (plan, concurrency limits, storage usage).
+
+    Args:
+        user_id: Helix user identifier.
+        plan_tier: caller-supplied plan tier (`free`, `pro`, `enterprise`).
+            Used to size the response's limits when the user record is mocked.
     """
-    # TODO: implement — query DB or return mock data
-    raise NotImplementedError("Implement get_recent_builds()")
-
-
-async def get_account_status(user_id: str) -> AccountStatus:
-    """
-    Return current account status (plan, usage limits).
-
-    For the take-home: mock data is fine.
-    """
-    # TODO: implement
-    raise NotImplementedError("Implement get_account_status()")
+    limits = {
+        "free":       (2,  10.0),
+        "pro":        (8,  100.0),
+        "enterprise": (32, 1000.0),
+    }
+    concurrent_limit, storage_limit = limits.get(plan_tier, limits["free"])
+    seed = _seed(user_id)
+    return {
+        "user_id": user_id,
+        "plan_tier": plan_tier,
+        "concurrent_builds_used": seed % max(1, concurrent_limit),
+        "concurrent_builds_limit": concurrent_limit,
+        "storage_used_gb": round((seed % 1000) / 100.0, 2),
+        "storage_limit_gb": storage_limit,
+    }

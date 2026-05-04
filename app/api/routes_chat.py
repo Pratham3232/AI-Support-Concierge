@@ -1,8 +1,8 @@
-"""
-POST /v1/chat/{session_id} — send a user message, get assistant reply.
-"""
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+"""POST /v1/chat/{session_id} — run one turn of the SROP pipeline."""
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Header
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -12,12 +12,12 @@ router = APIRouter(tags=["chat"])
 
 
 class ChatRequest(BaseModel):
-    content: str
+    content: str = Field(min_length=1, max_length=8000)
 
 
 class ChatResponse(BaseModel):
     reply: str
-    routed_to: str   # which sub-agent handled this turn
+    routed_to: str  # knowledge | account | escalation | smalltalk
     trace_id: str
 
 
@@ -25,14 +25,14 @@ class ChatResponse(BaseModel):
 async def chat(
     session_id: str,
     body: ChatRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
 ) -> ChatResponse:
+    """Run one turn. Errors surface as RFC 7807 problem-details:
+        404 SESSION_NOT_FOUND
+        504 UPSTREAM_TIMEOUT
     """
-    Run one turn of the SROP pipeline.
-
-    Error cases:
-    - Session not found → 404
-    - LLM timeout → 504
-    """
-    result = await pipeline.run(session_id, body.content, db)
-    return ChatResponse(reply=result.content, routed_to=result.routed_to, trace_id=result.trace_id)
+    result = await pipeline.run(session_id, body.content, db, idempotency_key)
+    return ChatResponse(
+        reply=result.content, routed_to=result.routed_to, trace_id=result.trace_id
+    )

@@ -38,14 +38,15 @@ class RateLimitedError(HelixError):
     error_code = "RATE_LIMITED"
 
 
-async def helix_error_handler(request: Request, exc: HelixError) -> JSONResponse:
+async def helix_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """Convert HelixError → RFC 7807 problem detail."""
+    helix_exc = exc if isinstance(exc, HelixError) else HelixError(str(exc) or "internal error")
     return JSONResponse(
-        status_code=exc.status_code,
+        status_code=helix_exc.status_code,
         content={
-            "type": f"https://docs.helix.example/errors/{exc.error_code.lower()}",
-            "title": exc.error_code,
-            "status": exc.status_code,
-            "detail": exc.detail,
+            "type": f"https://docs.helix.example/errors/{helix_exc.error_code.lower()}",
+            "title": helix_exc.error_code,
+            "status": helix_exc.status_code,
+            "detail": helix_exc.detail,
         },
     )

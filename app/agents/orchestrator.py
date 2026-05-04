@@ -1,42 +1,67 @@
 """
-SROP Root Orchestrator — Google ADK agent.
+Root orchestrator. Routing happens via ADK's AgentTool — the LLM picks which
+specialist to invoke as a function call. We do NOT string-parse routing
+decisions (see assignment penalty list).
 
-Routes every user turn to KnowledgeAgent or AccountAgent via ADK's AgentTool.
-This means the LLM decides which tool to call — you do not parse its output.
-
-Intent → sub-agent:
-  knowledge:  "how do I X", "what is X", docs questions
-  account:    "show my builds", "my account status", usage questions
-  smalltalk:  greetings, thanks — root agent handles inline (no tool call)
-
-See docs/google-adk-guide.md for AgentTool pattern and event extraction.
+State persistence: Pattern 3 from `docs/google-adk-guide.md`. SessionState is
+loaded from the DB by the pipeline and rendered into the system instruction
+at runtime via `build_root_agent(state)`. Nothing about the agent objects is
+mutated between turns; we just reconstruct the root with a fresh prompt.
 """
-# from google.adk.agents import LlmAgent
-# from google.adk.tools.agent_tool import AgentTool
-# from app.agents.knowledge import knowledge_agent
-# from app.agents.account import account_agent
-# from app.settings import settings
+from __future__ import annotations
 
-ROOT_INSTRUCTION = """
+from google.adk.agents import LlmAgent
+from google.adk.tools.agent_tool import AgentTool
+
+from app.agents.account import account_agent
+from app.agents.knowledge import knowledge_agent
+from app.settings import settings
+from app.srop.state import SessionState
+
+ROOT_INSTRUCTION_TEMPLATE = """\
 You are the Helix Support Concierge — a routing agent.
-Call the correct specialist tool based on the user's intent.
 
-Intent → tool:
-- HOW to do something, WHAT something is, docs/feature questions → knowledge_agent
-- Their account, builds, status, usage → account_agent
-- Greetings or off-topic → respond directly, no tool call
+Decide which specialist handles the user's message and call it as a tool.
 
-Always call a tool when intent matches. Never answer knowledge or account questions yourself.
-User context will be in the system message — use it.
+Routing rules:
+  • How-to / what-is / docs / feature questions   →  call `knowledge_agent`
+  • The user's account, builds, status, usage     →  call `account_agent`
+  • Greetings, thanks, off-topic                  →  reply directly. No tool call.
+
+Hard rules:
+  • Never answer knowledge or account questions yourself — always defer.
+  • Never ask the user for `user_id` or `plan_tier`. They are below.
+  • For follow-up turns, prefer the `last_agent` again unless the topic
+    clearly switches.
+
+Current user context:
+  user_id:        {user_id}
+  plan_tier:      {plan_tier}
+  turn_count:     {turn_count}
+  last_agent:     {last_agent}
+  open_tickets:   {open_tickets}
 """
 
-# TODO: wire up sub-agents and root orchestrator
-# knowledge_tool = AgentTool(agent=knowledge_agent)
-# account_tool   = AgentTool(agent=account_agent)
 
-# root_agent = LlmAgent(
-#     name="srop_root",
-#     model=settings.adk_model,
-#     instruction=ROOT_INSTRUCTION,
-#     tools=[knowledge_tool, account_tool],
-# )
+def _render_instruction(state: SessionState) -> str:
+    return ROOT_INSTRUCTION_TEMPLATE.format(
+        user_id=state.user_id,
+        plan_tier=state.plan_tier,
+        turn_count=state.turn_count,
+        last_agent=state.last_agent or "none",
+        open_tickets=", ".join(state.open_ticket_ids) if state.open_ticket_ids else "none",
+    )
+
+
+def build_root_agent(state: SessionState) -> LlmAgent:
+    """Build the root orchestrator with state injected as system context."""
+    return LlmAgent(
+        name="srop_root",
+        model=settings.adk_model,
+        description="Helix Support Concierge — routes user turns to specialist sub-agents.",
+        instruction=_render_instruction(state),
+        tools=[
+            AgentTool(agent=knowledge_agent),
+            AgentTool(agent=account_agent),
+        ],
+    )

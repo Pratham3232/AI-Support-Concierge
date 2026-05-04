@@ -1,1 +1,16 @@
 .DS_Store
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# secrets / local state
+.env
+helix_srop.db
+helix_srop.db-journal
+chroma_db/
+
+# test artefacts
+tests/_chroma_test/

@@ -1,26 +1,36 @@
-"""
-Unit tests for RAG retrieval.
-Requires the vector store to be seeded first (run ingest.py on docs/).
-"""
+"""Unit tests for the RAG layer."""
+from __future__ import annotations
+
 import pytest
+
+from app.agents.tools.search_docs import search_docs
+from app.rag.chunker import chunk_markdown
 
 
 @pytest.mark.asyncio
-async def test_search_docs_returns_results_with_chunk_ids():
-    """search_docs must return chunk IDs and scores in [0, 1]."""
-    # from app.agents.tools.search_docs import search_docs
-    # results = await search_docs("how to rotate a deploy key", k=3)
-    # assert len(results) > 0
-    # assert all(r.chunk_id for r in results)
-    # assert all(0.0 <= r.score <= 1.0 for r in results)
-    pytest.skip("Implement after search_docs and ingest are working")
+async def test_search_docs_returns_results_with_chunk_ids(seeded_vector_store):
+    result = await search_docs("how to rotate a deploy key", k=3)
+    chunks = result["chunks"]
+
+    assert len(chunks) > 0, "expected at least one chunk for this query"
+    assert all(c["chunk_id"].startswith("chunk_") for c in chunks)
+    assert all(0.0 <= c["score"] <= 1.0 for c in chunks)
+    assert all(c["snippet"] for c in chunks)
+    # Top hit should come from deploy-keys.md.
+    sources = {c["source"] for c in chunks}
+    assert "deploy-keys.md" in sources
 
 
 def test_chunker_produces_non_empty_chunks():
-    """Chunker must not produce empty strings."""
-    # from app.rag.ingest import chunk_markdown
-    # text = "# Header\n\nSome content.\n\n## Section 2\n\nMore content here."
-    # chunks = chunk_markdown(text, chunk_size=100, overlap=20)
-    # assert len(chunks) > 0
-    # assert all(c.strip() for c in chunks)
-    pytest.skip("Implement after chunk_markdown is built")
+    text = (
+        "## Section A\n\nFirst paragraph with a sentence. Another sentence here.\n\n"
+        "## Section B\n\nMore content.\n\n### Subsection\n\nEven more content."
+    )
+    chunks = chunk_markdown(text, chunk_size=120, overlap=1)
+    assert len(chunks) > 0
+    assert all(c.strip() for c in chunks)
+
+
+def test_chunker_handles_empty_input():
+    assert chunk_markdown("") == []
+    assert chunk_markdown("   \n\n  ") == []
